@@ -1,0 +1,5 @@
+# Replace this file with your own UTF-8 plain-text corpus.
+# Example sources: project docs, notes, public-domain books, chat logs you own.
+# Keep at least a few hundred KB for meaningful training behavior.
+
+This is only placeholder text.

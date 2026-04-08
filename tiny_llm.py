@@ -117,12 +117,13 @@ def make_batch(data, batch_size, context_length, device):
     return x.to(device), y.to(device)
 
 
-def save_checkpoint(path: Path, model, tokenizer: CharTokenizer, cfg: Config):
+def save_checkpoint(path: Path, model, tokenizer: CharTokenizer, cfg: Config, history=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model_state": model.state_dict(),
         "stoi": tokenizer.stoi,
         "cfg": cfg.__dict__,
+        "history": history or [],
     }
     torch.save(payload, path)
 
@@ -159,6 +160,7 @@ def train(args):
     )
     model = TinyGPT(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    history = []
 
     for step in range(1, args.steps + 1):
         model.train()
@@ -175,12 +177,14 @@ def train(args):
                 vx, vy = make_batch(val_data, args.batch_size, args.context_length, device)
                 _, vloss = model(vx, vy)
             print(f"step={step} train_loss={loss.item():.4f} val_loss={vloss.item():.4f}")
+            history.append({"step": step, "train_loss": loss.item(), "val_loss": vloss.item()})
 
-    save_checkpoint(Path(args.checkpoint), model, tokenizer, cfg)
+    save_checkpoint(Path(args.checkpoint), model, tokenizer, cfg, history=history)
     meta = {
         "vocab_size": tokenizer.vocab_size,
         "config": cfg.__dict__,
         "checkpoint": args.checkpoint,
+        "history_points": len(history),
     }
     print("Training complete.")
     print(json.dumps(meta, indent=2))
@@ -206,6 +210,62 @@ def generate(args):
         x = torch.cat([x, next_id], dim=1)
 
     print(tokenizer.decode(x[0].tolist()))
+
+
+def _line_points(xs, ys, width, height, pad):
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    x_span = max(max_x - min_x, 1e-9)
+    y_span = max(max_y - min_y, 1e-9)
+
+    points = []
+    for x, y in zip(xs, ys):
+        px = pad + (x - min_x) / x_span * (width - 2 * pad)
+        py = height - pad - (y - min_y) / y_span * (height - 2 * pad)
+        points.append(f"{px:.2f},{py:.2f}")
+    return " ".join(points), (min_x, max_x, min_y, max_y)
+
+
+def graphify(args):
+    checkpoint_path = Path(args.checkpoint)
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    history = payload.get("history", [])
+    if not history:
+        raise ValueError(
+            f"No training history found in checkpoint: {checkpoint_path}. "
+            "Train with this version to generate a loss curve."
+        )
+
+    steps = [point["step"] for point in history]
+    train_losses = [point["train_loss"] for point in history]
+    val_losses = [point["val_loss"] for point in history]
+
+    width, height, pad = 900, 560, 60
+    all_losses = train_losses + val_losses
+    train_poly, (min_x, max_x, _, _) = _line_points(steps, train_losses, width, height, pad)
+    val_poly, (_, _, min_loss, max_loss) = _line_points(steps, val_losses, width, height, pad)
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">
+  <rect x="0" y="0" width="{width}" height="{height}" fill="white" />
+  <line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" stroke="#333" stroke-width="2" />
+  <line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height - pad}" stroke="#333" stroke-width="2" />
+  <polyline fill="none" stroke="#1f77b4" stroke-width="2" points="{train_poly}" />
+  <polyline fill="none" stroke="#ff7f0e" stroke-width="2" points="{val_poly}" />
+  <text x="{width / 2}" y="30" text-anchor="middle" font-size="20" font-family="sans-serif">{args.title}</text>
+  <text x="{width / 2}" y="{height - 15}" text-anchor="middle" font-size="14" font-family="sans-serif">Step ({min_x} to {max_x})</text>
+  <text x="20" y="{height / 2}" transform="rotate(-90 20,{height / 2})" text-anchor="middle" font-size="14" font-family="sans-serif">Loss ({min(all_losses):.4f} to {max(all_losses):.4f})</text>
+  <rect x="{width - 240}" y="55" width="16" height="4" fill="#1f77b4" />
+  <text x="{width - 215}" y="60" font-size="13" font-family="sans-serif">train_loss</text>
+  <rect x="{width - 240}" y="85" width="16" height="4" fill="#ff7f0e" />
+  <text x="{width - 215}" y="90" font-size="13" font-family="sans-serif">val_loss</text>
+  <text x="{pad}" y="{pad - 10}" font-size="12" font-family="sans-serif">max loss: {max_loss:.4f}</text>
+  <text x="{pad}" y="{height - pad + 20}" font-size="12" font-family="sans-serif">min loss: {min_loss:.4f}</text>
+</svg>
+"""
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(svg, encoding="utf-8")
+    print(f"Saved loss curve SVG to {out}")
 
 
 def build_parser():
@@ -234,6 +294,12 @@ def build_parser():
     gen_p.add_argument("--temperature", type=float, default=0.9)
     gen_p.add_argument("--cpu", action="store_true", help="Force CPU even if CUDA is available")
     gen_p.set_defaults(func=generate)
+
+    graph_p = sub.add_parser("graphify", help="Plot train/val loss curves from a checkpoint")
+    graph_p.add_argument("--checkpoint", required=True)
+    graph_p.add_argument("--output", default="artifacts/loss_curve.svg")
+    graph_p.add_argument("--title", default="Training loss curves")
+    graph_p.set_defaults(func=graphify)
 
     return p
 

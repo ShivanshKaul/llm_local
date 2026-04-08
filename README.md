@@ -49,6 +49,17 @@ python tiny_llm.py generate \
   --max-new-tokens 200
 ```
 
+4) Graphify loss curves from the checkpoint:
+
+```bash
+python tiny_llm.py graphify \
+  --checkpoint checkpoints/tiny.pt \
+  --output artifacts/loss_curve.svg \
+  --title "TinyGPT train vs val loss"
+```
+
+This uses training history saved during `train` and writes an SVG loss curve.
+
 ## Suggested defaults for 8 GB RAM
 
 - `--batch-size 16` or `32`
@@ -91,4 +102,3 @@ mv data/input.clean.txt data/input.txt
 ```
 
 Tip: since this project uses **character-level tokenization**, punctuation and spacing patterns in your corpus strongly affect output style.
-
